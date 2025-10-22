@@ -16,7 +16,7 @@ st.title("📊 Conversor XLS para CSV")
 st.markdown("""
 Esta aplicação permite converter arquivos Excel (XLS/XLSX) para CSV com controle total sobre:
 - **Visualização** dos dados de entrada e saída
-- **Edição de metadados** das colunas (tipos de dados)
+- **Edição de metadados** das colunas (tipos e tamanhos)
 - **Seleção de colunas** para exportação
 """)
 
@@ -31,7 +31,8 @@ with st.sidebar:
     Confira os dados carregados na tabela
     
     ### Passo 3: Metadados
-    Veja e edite os tipos de dados das colunas
+    Veja e edite os tipos de dados das colunas.
+    - Se o tipo for `varchar`, defina o **Tamanho** máximo.
     
     ### Passo 4: Seleção
     Escolha quais colunas incluir no CSV
@@ -44,9 +45,11 @@ with st.sidebar:
     st.markdown("""**💡 Dicas:**
     - Use **INT** para números pequenos (-2B a 2B)
     - Use **BIGINT** para números grandes
+    - Use **VARCHAR** e defina o **Tamanho** para corresponder à sua tabela no banco (ex: 50 para `varchar(50)`).
     - A aplicação detecta e corrige automaticamente:
       - Inteiros fora do intervalo
       - Caracteres inválidos UTF-8
+      - **Textos maiores que o limite (truncando)**
     """)
 
 # Inicializar estado da sessão
@@ -54,6 +57,9 @@ if 'df' not in st.session_state:
     st.session_state.df = None
 if 'column_types' not in st.session_state:
     st.session_state.column_types = {}
+# NOVO: Estado para armazenar os tamanhos das colunas
+if 'column_lengths' not in st.session_state:
+    st.session_state.column_lengths = {}
 if 'selected_columns' not in st.session_state:
     st.session_state.selected_columns = []
 
@@ -114,7 +120,8 @@ def clean_string(value):
         return ''
 
 # Função para converter tipo de dado
-def convert_dtype(series, target_type):
+# MODIFICADO: Adicionado 'max_len' para truncar varchars
+def convert_dtype(series, target_type, max_len=None):
     """Converte uma série para o tipo de dado especificado com tratamento robusto de erros"""
     try:
         if target_type == 'int':
@@ -131,7 +138,14 @@ def convert_dtype(series, target_type):
             return pd.to_datetime(series, errors='coerce')
         else:  # varchar
             # Limpar strings para garantir UTF-8 válido
-            return series.apply(clean_string)
+            cleaned_series = series.apply(clean_string)
+            
+            # NOVO: Truncar a string se max_len for fornecido
+            if max_len is not None and max_len > 0:
+                return cleaned_series.str[:max_len]
+            else:
+                return cleaned_series
+                
     except Exception as e:
         st.warning(f"Aviso ao converter coluna: {str(e)}")
         return series
@@ -154,6 +168,10 @@ if uploaded_file is not None:
         if not st.session_state.column_types:
             st.session_state.column_types = {col: infer_dtype(df[col]) for col in df.columns}
         
+        # NOVO: Inicializar tamanhos das colunas (default 255)
+        if not st.session_state.column_lengths:
+            st.session_state.column_lengths = {col: 255 for col in df.columns}
+            
         # Inicializar colunas selecionadas se necessário
         if not st.session_state.selected_columns:
             st.session_state.selected_columns = list(df.columns)
@@ -178,7 +196,7 @@ if uploaded_file is not None:
         
         # Edição de metadados
         st.header("3️⃣ Metadados das Colunas")
-        st.markdown("Configure o tipo de dado para cada coluna:")
+        st.markdown("Configure o tipo de dado e o tamanho (para `varchar`) de cada coluna:")
         
         # Criar colunas para exibir metadados
         type_options = ['varchar', 'int', 'bigint', 'float', 'bool', 'datetime']
@@ -207,6 +225,18 @@ if uploaded_file is not None:
                     )
                     st.session_state.column_types[col_name] = new_type
                     
+                    # NOVO: Campo de tamanho para Varchar
+                    if new_type == 'varchar':
+                        default_len = st.session_state.column_lengths.get(col_name, 255)
+                        new_len = st.number_input(
+                            "Tamanho (max)",
+                            min_value=1,
+                            value=default_len,
+                            key=f"len_{col_name}",
+                            help="Define o tamanho máximo para colunas de texto (varchar). Valores maiores serão truncados (cortados)."
+                        )
+                        st.session_state.column_lengths[col_name] = int(new_len)
+                    
                     st.divider()
         
         # Seleção de colunas
@@ -231,8 +261,16 @@ if uploaded_file is not None:
             cols = st.columns(cols_per_row)
             for j, col_name in enumerate(columns[i:i+cols_per_row]):
                 with cols[j]:
+                    # MODIFICADO: Mostra o tamanho do varchar no label
+                    col_type = st.session_state.column_types[col_name]
+                    if col_type == 'varchar':
+                        col_len = st.session_state.column_lengths.get(col_name, 255)
+                        label = f"{col_name} ({col_type}[{col_len}])"
+                    else:
+                        label = f"{col_name} ({col_type})"
+                        
                     is_selected = st.checkbox(
-                        f"{col_name} ({st.session_state.column_types[col_name]})",
+                        label,
                         value=col_name in st.session_state.selected_columns,
                         key=f"select_{col_name}"
                     )
@@ -252,18 +290,35 @@ if uploaded_file is not None:
             # Aplicar conversões de tipo
             for col in st.session_state.selected_columns:
                 target_type = st.session_state.column_types[col]
-                output_df[col] = convert_dtype(output_df[col], target_type)
+                
+                # MODIFICADO: Passar o max_len para a função de conversão
+                max_len = None
+                if target_type == 'varchar':
+                    max_len = st.session_state.column_lengths.get(col, 255)
+                    
+                output_df[col] = convert_dtype(output_df[col], target_type, max_len=max_len)
             
             # Mostrar preview
             st.dataframe(output_df, use_container_width=True, height=300)
             
             # Mostrar informações sobre os tipos finais
             st.subheader("Tipos de Dados Finais")
-            type_info = pd.DataFrame({
-                'Coluna': output_df.columns,
-                'Tipo Configurado': [st.session_state.column_types[col] for col in output_df.columns],
-                'Tipo Pandas': [str(output_df[col].dtype) for col in output_df.columns]
-            })
+            type_info_list = []
+            for col in output_df.columns:
+                col_type = st.session_state.column_types[col]
+                if col_type == 'varchar':
+                    col_len = st.session_state.column_lengths.get(col, 255)
+                    config_type = f"varchar[{col_len}]"
+                else:
+                    config_type = col_type
+                
+                type_info_list.append({
+                    'Coluna': col,
+                    'Tipo Configurado': config_type,
+                    'Tipo Pandas': str(output_df[col].dtype)
+                })
+                
+            type_info = pd.DataFrame(type_info_list)
             st.dataframe(type_info, use_container_width=True, hide_index=True)
             
             # Download do CSV
@@ -279,9 +334,7 @@ if uploaded_file is not None:
                 col_type = st.session_state.column_types[col]
                 if col_type in ['int', 'bigint']:
                     original_values = df[col]
-                    converted_values = output_df[col]
                     
-                    # Verificar se houve truncamento
                     try:
                         numeric_original = pd.to_numeric(original_values, errors='coerce')
                         
@@ -296,6 +349,20 @@ if uploaded_file is not None:
                     except:
                         pass
             
+            # NOVO: Verificar truncamento de strings
+            for col in st.session_state.selected_columns:
+                if st.session_state.column_types[col] == 'varchar':
+                    try:
+                        max_len = st.session_state.column_lengths.get(col, 255)
+                        # Compara o tamanho da string original (apenas limpando, sem truncar)
+                        original_cleaned_len = df[col].apply(clean_string).str.len()
+                        truncated_count = (original_cleaned_len > max_len).sum()
+                        
+                        if truncated_count > 0:
+                            warnings.append(f"🟠 **{col}**: {truncated_count} valor(es) excederam o limite de {max_len} caracteres e foram **truncados**.")
+                    except:
+                        pass
+                        
             # Verificar problemas de encoding
             for col in st.session_state.selected_columns:
                 if st.session_state.column_types[col] == 'varchar':
@@ -373,7 +440,7 @@ else:
     st.markdown("""
     1. **Upload**: Clique no botão acima e selecione seu arquivo Excel
     2. **Visualize**: Confira os dados carregados na tabela
-    3. **Configure**: Ajuste os tipos de dados conforme necessário
+    3. **Configure**: Ajuste os tipos de dados e **tamanhos de varchar**
     4. **Selecione**: Marque as colunas que deseja exportar
     5. **Baixe**: Clique no botão de download para obter seu CSV
     """)
@@ -388,4 +455,3 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
