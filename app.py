@@ -18,6 +18,7 @@ Esta aplicação permite converter arquivos Excel (XLS/XLSX) para CSV com contro
 - **Visualização** dos dados de entrada e saída
 - **Edição de metadados** das colunas (tipos e tamanhos)
 - **Seleção de colunas** para exportação
+- **NOVO: Filtragem de linhas** (manter N primeiras ou remover todas)
 """)
 
 # Sidebar com instruções
@@ -37,7 +38,10 @@ with st.sidebar:
     ### Passo 4: Seleção
     Escolha quais colunas incluir no CSV
     
-    ### Passo 5: Download
+    ### Passo 5: Filtragem
+    Escolha quantas linhas deseja manter (N primeiras ou nenhuma)
+    
+    ### Passo 6: Download
     Baixe o arquivo CSV convertido
     """)
     
@@ -57,11 +61,16 @@ if 'df' not in st.session_state:
     st.session_state.df = None
 if 'column_types' not in st.session_state:
     st.session_state.column_types = {}
-# NOVO: Estado para armazenar os tamanhos das colunas
 if 'column_lengths' not in st.session_state:
     st.session_state.column_lengths = {}
 if 'selected_columns' not in st.session_state:
     st.session_state.selected_columns = []
+# NOVO: Estado para filtro de linhas
+if 'row_filter_mode' not in st.session_state:
+    st.session_state.row_filter_mode = 'Manter todas'
+if 'row_filter_n' not in st.session_state:
+    st.session_state.row_filter_n = 100
+
 
 # Função para inferir tipo de dado
 def infer_dtype(series):
@@ -120,7 +129,6 @@ def clean_string(value):
         return ''
 
 # Função para converter tipo de dado
-# MODIFICADO: Adicionado 'max_len' para truncar varchars
 def convert_dtype(series, target_type, max_len=None):
     """Converte uma série para o tipo de dado especificado com tratamento robusto de erros"""
     try:
@@ -140,7 +148,7 @@ def convert_dtype(series, target_type, max_len=None):
             # Limpar strings para garantir UTF-8 válido
             cleaned_series = series.apply(clean_string)
             
-            # NOVO: Truncar a string se max_len for fornecido
+            # Truncar a string se max_len for fornecido
             if max_len is not None and max_len > 0:
                 return cleaned_series.str[:max_len]
             else:
@@ -168,7 +176,7 @@ if uploaded_file is not None:
         if not st.session_state.column_types:
             st.session_state.column_types = {col: infer_dtype(df[col]) for col in df.columns}
         
-        # NOVO: Inicializar tamanhos das colunas (default 255)
+        # Inicializar tamanhos das colunas (default 255)
         if not st.session_state.column_lengths:
             st.session_state.column_lengths = {col: 255 for col in df.columns}
             
@@ -225,7 +233,7 @@ if uploaded_file is not None:
                     )
                     st.session_state.column_types[col_name] = new_type
                     
-                    # NOVO: Campo de tamanho para Varchar
+                    # Campo de tamanho para Varchar
                     if new_type == 'varchar':
                         default_len = st.session_state.column_lengths.get(col_name, 255)
                         new_len = st.number_input(
@@ -261,7 +269,7 @@ if uploaded_file is not None:
             cols = st.columns(cols_per_row)
             for j, col_name in enumerate(columns[i:i+cols_per_row]):
                 with cols[j]:
-                    # MODIFICADO: Mostra o tamanho do varchar no label
+                    # Mostra o tamanho do varchar no label
                     col_type = st.session_state.column_types[col_name]
                     if col_type == 'varchar':
                         col_len = st.session_state.column_lengths.get(col_name, 255)
@@ -279,19 +287,53 @@ if uploaded_file is not None:
         
         st.session_state.selected_columns = selected_columns
         
+        # NOVO: Filtro de Linhas
+        st.header("5️⃣ Filtragem de Linhas")
+        st.markdown("Escolha quantas linhas deseja manter no arquivo final (o cabeçalho é sempre mantido).")
+        
+        filter_options = ['Manter todas', 'Manter as N primeiras', 'Remover todas']
+        st.session_state.row_filter_mode = st.radio(
+            "Modo de filtragem de linhas:",
+            options=filter_options,
+            key='filter_mode_radio',
+            index=filter_options.index(st.session_state.row_filter_mode),
+            horizontal=True
+        )
+
+        if st.session_state.row_filter_mode == 'Manter as N primeiras':
+            st.session_state.row_filter_n = st.number_input(
+                f"Número de linhas (N) para manter (de {len(df)} totais):",
+                min_value=0,
+                max_value=len(df), # O DataFrame original (df)
+                value=st.session_state.row_filter_n,
+                key='filter_n_input'
+            )
+        
         # Preview dos dados de saída
         if st.session_state.selected_columns:
-            st.header("5️⃣ Preview dos Dados de Saída")
-            st.markdown(f"**Colunas selecionadas:** {len(st.session_state.selected_columns)}")
+            st.header("6️⃣ Preview dos Dados de Saída") # Reenumerado
             
-            # Criar DataFrame de saída com tipos convertidos
-            output_df = df[st.session_state.selected_columns].copy()
+            # Criar DataFrame de saída com colunas selecionadas
+            temp_df = df[st.session_state.selected_columns].copy()
+            
+            # NOVO: Aplicar filtro de linhas
+            if st.session_state.row_filter_mode == 'Manter as N primeiras':
+                output_df = temp_df.head(st.session_state.row_filter_n).copy()
+                st.markdown(f"**Filtro aplicado:** Mostrando as primeiras **{len(output_df)}** linhas.")
+            elif st.session_state.row_filter_mode == 'Remover todas':
+                output_df = temp_df.head(0).copy() # Cria um DF vazio com os mesmos cabeçalhos
+                st.markdown(f"**Filtro aplicado:** Todas as linhas de dados foram removidas (apenas o cabeçalho será exportado).")
+            else: # 'Manter todas'
+                output_df = temp_df.copy()
+                st.markdown(f"**Filtro aplicado:** Mostrando todas as **{len(output_df)}** linhas.")
+            
+            st.markdown(f"**Colunas selecionadas:** {len(st.session_state.selected_columns)}")
             
             # Aplicar conversões de tipo
             for col in st.session_state.selected_columns:
                 target_type = st.session_state.column_types[col]
                 
-                # MODIFICADO: Passar o max_len para a função de conversão
+                # Passar o max_len para a função de conversão
                 max_len = None
                 if target_type == 'varchar':
                     max_len = st.session_state.column_lengths.get(col, 255)
@@ -322,18 +364,21 @@ if uploaded_file is not None:
             st.dataframe(type_info, use_container_width=True, hide_index=True)
             
             # Download do CSV
-            st.header("6️⃣ Download do Arquivo CSV")
+            st.header("7️⃣ Download do Arquivo CSV") # Reenumerado
             
             # Detectar problemas antes da exportação
             st.subheader("⚠️ Validação de Dados")
             
             warnings = []
             
+            # Usar 'df' (original) para verificar truncamento e ranges
+            original_df_for_check = df 
+            
             # Verificar inteiros fora do intervalo
             for col in st.session_state.selected_columns:
                 col_type = st.session_state.column_types[col]
                 if col_type in ['int', 'bigint']:
-                    original_values = df[col]
+                    original_values = original_df_for_check[col]
                     
                     try:
                         numeric_original = pd.to_numeric(original_values, errors='coerce')
@@ -349,13 +394,13 @@ if uploaded_file is not None:
                     except:
                         pass
             
-            # NOVO: Verificar truncamento de strings
+            # Verificar truncamento de strings
             for col in st.session_state.selected_columns:
                 if st.session_state.column_types[col] == 'varchar':
                     try:
                         max_len = st.session_state.column_lengths.get(col, 255)
                         # Compara o tamanho da string original (apenas limpando, sem truncar)
-                        original_cleaned_len = df[col].apply(clean_string).str.len()
+                        original_cleaned_len = original_df_for_check[col].apply(clean_string).str.len()
                         truncated_count = (original_cleaned_len > max_len).sum()
                         
                         if truncated_count > 0:
@@ -367,7 +412,7 @@ if uploaded_file is not None:
             for col in st.session_state.selected_columns:
                 if st.session_state.column_types[col] == 'varchar':
                     try:
-                        original_values = df[col].astype(str)
+                        original_values = original_df_for_check[col].astype(str)
                         cleaned_count = 0
                         for val in original_values:
                             if val != clean_string(val):
@@ -442,7 +487,8 @@ else:
     2. **Visualize**: Confira os dados carregados na tabela
     3. **Configure**: Ajuste os tipos de dados e **tamanhos de varchar**
     4. **Selecione**: Marque as colunas que deseja exportar
-    5. **Baixe**: Clique no botão de download para obter seu CSV
+    5. **Filtre**: Escolha quantas linhas manter (ex: 100 primeiras, ou nenhuma)
+    6. **Baixe**: Clique no botão de download para obter seu CSV
     """)
 
 # Footer
